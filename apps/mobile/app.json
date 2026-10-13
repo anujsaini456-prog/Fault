@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Fault Sigma",
+    "slug": "fault-sigma",
+    "version": "0.1.0",
+    "scheme": "faultsigma",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.faultsigma.app",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Unlock Fault Sigma with Face ID."
+      }
+    },
+    "android": {
+      "package": "com.faultsigma.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1D4ED8",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "allowBackup": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Unlock Fault Sigma with Face ID."
+        }
+      ]
+    ],
+    "extra": {
+      "apiUrl": "https://localhost/api"
+    }
+  }
+}

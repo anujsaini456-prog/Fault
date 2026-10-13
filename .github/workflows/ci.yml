@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm --filter @fault-sigma/web build
+      - run: pnpm audit --prod --audit-level high
+
+  api:
+    runs-on: ubuntu-latest
+    env:
+      FS_DB_OWNER_PASSWORD: ci-owner
+      FS_DB_APP_PASSWORD: ci-app
+      POSTGRES_PASSWORD: ci-postgres
+      FS_JWT_SECRET: ci-jwt-secret-that-is-long-enough-for-tests
+      FS_SEED_ADMIN_PASSWORD: Ci-Admin-Password-1
+      FS_SEED_EXEC_PASSWORD: Ci-Exec-Password-1
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d db
+      - run: docker compose --profile test build api-test
+      - name: Lint
+        run: docker compose --profile test run --rm -e RUFF_CACHE_DIR=/tmp/ruff api-test ruff check app tests alembic
+      - name: Tests (unit + Postgres integration, incl. tenant isolation)
+        run: docker compose --profile test run --rm api-test
+      - name: Dependency audit
+        run: docker compose --profile test run --rm api-test sh -c "pip install -q pip-audit && pip-audit"
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t fs-api services/api --target runtime
+      - run: docker build -t fs-web -f apps/web/Dockerfile .
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fs-api
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

@@ -1,0 +1,112 @@
+# Fault Sigma — full stack.   cp .env.example .env  (edit it)  &&  docker compose up -d
+# Only Caddy publishes ports. Postgres and Redis are reachable solely on the internal network.
+name: fault-sigma
+
+x-api-image: &api-image
+  build:
+    context: services/api
+    target: runtime
+  image: fault-sigma/api:dev
+
+services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      FS_DB_OWNER_PASSWORD: ${FS_DB_OWNER_PASSWORD:?set in .env}
+      FS_DB_APP_PASSWORD: ${FS_DB_APP_PASSWORD:?set in .env}
+      TIMESCALEDB_TELEMETRY: "off"
+    command: ["postgres", "-c", "timescaledb.telemetry_level=off"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d faultsigma"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    networks: [backend]
+
+  # One-shot: migrations + demo seed, as the schema owner. Exits when done.
+  migrate:
+    <<: *api-image
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
+    environment:
+      FS_OWNER_DATABASE_URL: postgresql+asyncpg://fault_owner:${FS_DB_OWNER_PASSWORD}@db:5432/faultsigma
+      FS_JWT_SECRET: ${FS_JWT_SECRET:?set in .env}
+      FS_SEED_ADMIN_EMAIL: ${FS_SEED_ADMIN_EMAIL:-admin@example.com}
+      FS_SEED_ADMIN_PASSWORD: ${FS_SEED_ADMIN_PASSWORD:?set in .env}
+      FS_SEED_EXEC_PASSWORD: ${FS_SEED_EXEC_PASSWORD:?set in .env}
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [backend]
+
+  api:
+    <<: *api-image
+    restart: unless-stopped
+    environment:
+      FS_DATABASE_URL: postgresql+asyncpg://fault_app:${FS_DB_APP_PASSWORD}@db:5432/faultsigma
+      FS_REDIS_URL: redis://redis:6379/0
+      FS_JWT_SECRET: ${FS_JWT_SECRET:?set in .env}
+      FS_DATA_KEY: ${FS_DATA_KEY:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      retries: 10
+    networks: [backend]
+
+  # Serves the web app and reverse-proxies /api with automatic HTTPS.
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: fault-sigma/web:dev
+    restart: unless-stopped
+    environment:
+      FS_DOMAIN: ${FS_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [backend]
+
+  # docker compose --profile test run --rm api-test
+  api-test:
+    build:
+      context: services/api
+      target: test
+    image: fault-sigma/api:test
+    profiles: [test]
+    environment:
+      FS_TEST_DATABASE_URL: postgresql+asyncpg://fault_app:${FS_DB_APP_PASSWORD}@db:5432/faultsigma_test
+      FS_TEST_OWNER_DATABASE_URL: postgresql+asyncpg://fault_owner:${FS_DB_OWNER_PASSWORD}@db:5432/faultsigma_test
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [backend]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
